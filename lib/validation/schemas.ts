@@ -187,3 +187,98 @@ export const DiscoveryRequestSchema = z.object({
     .default(10),
 });
 export type DiscoveryRequest = z.infer<typeof DiscoveryRequestSchema>;
+
+/**
+ * Structured JSON Claude must return for a business analysis (Step 7).
+ * Validated on every AI response before anything is persisted — the model
+ * never gets to decide the final lead score, only these qualitative inputs.
+ */
+export const WebsiteNeedLevelSchema = z.enum(["LOW", "MEDIUM", "HIGH"]);
+
+export const LeadAnalysisSchema = z.object({
+  businessSummary: z.string(),
+  businessType: z.string(),
+  targetCustomers: z.array(z.string()),
+  likelyServices: z.array(z.string()),
+  websiteNeed: z.object({
+    level: WebsiteNeedLevelSchema,
+    reason: z.string(),
+  }),
+  recommendedPages: z.array(z.string()),
+  recommendedFeatures: z.array(z.string()),
+  designStyle: z.string(),
+  recommendedColors: z.array(z.string()),
+  recommendedCTAs: z.array(z.string()),
+  painPoints: z.array(z.string()),
+  personalizationPoints: z.array(z.string()),
+});
+export type LeadAnalysisOutput = z.infer<typeof LeadAnalysisSchema>;
+
+/**
+ * Request body for POST /api/leads/analyze.
+ */
+export const AnalyzeLeadRequestSchema = z.object({
+  leadId: z.uuid(),
+  regenerate: z.boolean().optional(),
+});
+export type AnalyzeLeadRequest = z.infer<typeof AnalyzeLeadRequestSchema>;
+
+/**
+ * Request body for POST /api/leads/analyze-batch.
+ */
+export const AnalyzeBatchRequestSchema = z.object({
+  limit: z.number().int().min(1).max(100).default(10),
+});
+export type AnalyzeBatchRequest = z.infer<typeof AnalyzeBatchRequestSchema>;
+
+/**
+ * The creative copy Claude (or, in DEMO_MODE, the deterministic mock
+ * generator) is responsible for (Step 8). Deliberately narrow: contact
+ * details, colors, and the chosen template are never AI-decided — they're
+ * filled in by lib/demo/generate-demo.ts from the business record and the
+ * template registry, the same "AI supplies inputs, app supplies the
+ * authoritative fields" split used for lead scoring.
+ */
+export const DemoCopySchema = z.object({
+  tagline: z.string().min(1),
+  heroHeadline: z.string().min(1),
+  heroSubheadline: z.string().min(1),
+  aboutText: z.string().min(1),
+  services: z
+    .array(
+      z.object({
+        title: z.string().min(1),
+        description: z.string().min(1),
+      })
+    )
+    .min(1),
+  whyChooseUs: z.array(z.string().min(1)).min(1),
+  ctaText: z.string().min(1),
+});
+export type DemoCopyOutput = z.infer<typeof DemoCopySchema>;
+
+/**
+ * Full structured content persisted to `demos.generated_content` — Claude's
+ * copy (DemoCopySchema) plus the deterministic fields the app fills in.
+ * Validated before every save (Step 8's "Validate Demo" stage).
+ */
+export const DemoContentSchema = DemoCopySchema.extend({
+  templateSlug: z.string().min(1),
+  templateName: z.string().min(1),
+  designStyle: z.string().min(1),
+  contactInfo: z.object({
+    phone: z.string().nullable(),
+    address: z.string().nullable(),
+    city: z.string().nullable(),
+  }),
+});
+export type DemoContentOutput = z.infer<typeof DemoContentSchema>;
+
+/**
+ * Request body for POST /api/demos/generate.
+ */
+export const GenerateDemoRequestSchema = z.object({
+  leadId: z.uuid(),
+  regenerate: z.boolean().optional(),
+});
+export type GenerateDemoRequest = z.infer<typeof GenerateDemoRequestSchema>;

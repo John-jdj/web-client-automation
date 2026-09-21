@@ -29,3 +29,18 @@ export async function getDemo(id: string): Promise<Demo | null> {
   if (error) throw error;
   return data;
 }
+
+/** Most recent demo for a lead, or null if none has been generated yet. */
+export async function getLatestDemoForLead(leadId: string): Promise<Demo | null> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("demos")
+    .select("*")
+    .eq("lead_id", leadId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data;
+}

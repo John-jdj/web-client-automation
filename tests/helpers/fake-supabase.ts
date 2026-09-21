@@ -33,9 +33,18 @@ export function createFakeSupabase() {
     let mode: "select" | "insert" | "update" = "select";
     let payload: Row | Row[] | null = null;
     const filters: Array<[string, unknown]> = [];
+    const inFilters: Array<[string, unknown[]]> = [];
+    const gteFilters: Array<[string, unknown]> = [];
     let limitN: number | null = null;
     let single = false;
     let maybeSingle = false;
+
+    function getPath(row: Row, path: string): unknown {
+      return path.split(".").reduce<unknown>((acc, key) => {
+        if (acc && typeof acc === "object") return (acc as Row)[key];
+        return undefined;
+      }, row);
+    }
 
     const builder = {
       select() {
@@ -43,6 +52,14 @@ export function createFakeSupabase() {
       },
       eq(col: string, val: unknown) {
         filters.push([col, val]);
+        return builder;
+      },
+      in(col: string, values: unknown[]) {
+        inFilters.push([col, values]);
+        return builder;
+      },
+      gte(col: string, val: unknown) {
+        gteFilters.push([col, val]);
         return builder;
       },
       order() {
@@ -86,7 +103,14 @@ export function createFakeSupabase() {
     function runQuery(
       resolve: (v: { data: unknown; error: { message: string } | null; count?: number }) => void
     ) {
-      const matches = (row: Row) => filters.every(([col, val]) => row[col] === val);
+      const matches = (row: Row) =>
+        filters.every(([col, val]) => getPath(row, col) === val) &&
+        inFilters.every(([col, values]) => values.includes(getPath(row, col))) &&
+        gteFilters.every(([col, val]) => {
+          const rowVal = getPath(row, col);
+          if (typeof rowVal === "string" && typeof val === "string") return rowVal >= val;
+          return false;
+        });
 
       if (mode === "insert") {
         const now = new Date().toISOString();
@@ -141,8 +165,17 @@ export function createFakeSupabase() {
     return builder;
   }
 
+  let currentUser: { id: string } | null = { id: "test-admin-user" };
+
   return {
     from,
+    auth: {
+      getUser: async () => ({ data: { user: currentUser }, error: null }),
+    },
+    /** Test-only: simulate signing out (unauthenticated requests). */
+    _setUser: (user: { id: string } | null) => {
+      currentUser = user;
+    },
     /** Test-only escape hatch to inspect what got written. */
     _dump: () => Object.fromEntries(store),
     /** Pre-populate a table for a test scenario. */
