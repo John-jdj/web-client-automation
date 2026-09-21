@@ -1,3 +1,15 @@
+# web-client-automation
+
+Automated lead-generation pipeline for a web design agency: discover local businesses without a website (Google Places), analyze and score them with Claude, and generate personalized demo websites.
+
+**Implemented so far**
+
+- Supabase CRM schema and Google Places lead discovery
+- AI lead analysis and deterministic lead scoring (`/leads`)
+- Demo website generator with template selection and preview (`/demo/[id]`); set `DEMO_MODE=true` to generate content without calling Claude
+
+Copy `.env.example` to `.env.local` and fill in your own keys — never commit `.env.local`.
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
 ## Getting Started
