@@ -32,3 +32,23 @@ export async function countTodaysAiAnalyses(): Promise<number> {
   if (error) throw error;
   return count ?? 0;
 }
+
+/**
+ * How many `vercel` / `demo_deployment` api_usage rows were logged today
+ * (UTC), for enforcing `automation_settings.daily_deployment_limit`.
+ */
+export async function countTodaysDeployments(): Promise<number> {
+  const supabase = await createClient();
+  const startOfDayUtc = new Date();
+  startOfDayUtc.setUTCHours(0, 0, 0, 0);
+
+  const { count, error } = await supabase
+    .from("api_usage")
+    .select("*", { count: "exact", head: true })
+    .eq("provider", "vercel")
+    .eq("operation", "demo_deployment")
+    .gte("created_at", startOfDayUtc.toISOString());
+
+  if (error) throw error;
+  return count ?? 0;
+}

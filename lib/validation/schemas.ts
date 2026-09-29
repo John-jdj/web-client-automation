@@ -282,3 +282,38 @@ export const GenerateDemoRequestSchema = z.object({
   regenerate: z.boolean().optional(),
 });
 export type GenerateDemoRequest = z.infer<typeof GenerateDemoRequestSchema>;
+
+/**
+ * Step 9: deploying a generated demo to Vercel (or, in DEMO_MODE, a
+ * deterministic mock deployment — see lib/vercel/deploy-adapter.ts).
+ */
+export const DemoDeploymentStatusSchema = z.enum([
+  "PENDING",
+  "BUILDING",
+  "READY",
+  "FAILED",
+  "CANCELLED",
+]);
+export type DemoDeploymentStatusInput = z.infer<typeof DemoDeploymentStatusSchema>;
+
+export const DeploymentInputSchema = z.object({
+  demo_id: z.uuid(),
+  provider: z.string().optional(),
+  deployment_id: z.string().optional().nullable(),
+  repository_url: z.url().optional().nullable(),
+  deployment_url: z.url().optional().nullable(),
+  status: DemoDeploymentStatusSchema.optional(),
+  error_message: z.string().optional().nullable(),
+  attempt_count: z.number().int().min(0).optional(),
+  started_at: z.iso.datetime().optional().nullable(),
+  completed_at: z.iso.datetime().optional().nullable(),
+});
+export type DeploymentInput = z.infer<typeof DeploymentInputSchema>;
+
+/**
+ * Request body for POST /api/demos/deploy-batch.
+ */
+export const DeployBatchRequestSchema = z.object({
+  limit: z.number().int().min(1).max(100).default(10),
+});
+export type DeployBatchRequest = z.infer<typeof DeployBatchRequestSchema>;

@@ -4,6 +4,7 @@ import { DemoInputSchema, type DemoInput } from "@/lib/validation/schemas";
 import type { Database } from "@/lib/supabase/database.types";
 
 export type Demo = Database["public"]["Tables"]["demos"]["Row"];
+export type DemoUpdate = Database["public"]["Tables"]["demos"]["Update"];
 
 export async function createDemo(input: DemoInput): Promise<Demo> {
   const parsed = DemoInputSchema.parse(input);
@@ -11,6 +12,19 @@ export async function createDemo(input: DemoInput): Promise<Demo> {
   const { data, error } = await supabase
     .from("demos")
     .insert(parsed)
+    .select("*")
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+export async function updateDemo(id: string, updates: DemoUpdate): Promise<Demo> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("demos")
+    .update(updates)
+    .eq("id", id)
     .select("*")
     .single();
 

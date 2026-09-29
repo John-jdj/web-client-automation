@@ -74,6 +74,16 @@ export default async function LeadDetailPage({
     .limit(1)
     .maybeSingle();
 
+  const { data: deployment } = demo
+    ? await supabase
+        .from("demo_deployments")
+        .select("deployment_url, status")
+        .eq("demo_id", demo.id)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+    : { data: null };
+
   const rawResponse = analysis?.raw_response as
     | { data?: { websiteNeed?: { level?: string; reason?: string } } }
     | null
@@ -216,7 +226,10 @@ export default async function LeadDetailPage({
         <DemoActions
           leadId={id}
           qualified={lead.qualification_status === "QUALIFIED"}
-          initialDemo={demo && demo.status === "GENERATED" ? demo : null}
+          initialDemo={demo ?? null}
+          initialDeployment={
+            deployment ? { deploymentUrl: deployment.deployment_url, status: deployment.status } : null
+          }
         />
       </section>
     </div>
