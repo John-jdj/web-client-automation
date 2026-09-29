@@ -317,3 +317,45 @@ export const DeployBatchRequestSchema = z.object({
   limit: z.number().int().min(1).max(100).default(10),
 });
 export type DeployBatchRequest = z.infer<typeof DeployBatchRequestSchema>;
+
+/**
+ * Step 10: the creative copy Claude (or, in DEMO_MODE, the deterministic
+ * mock generator) is responsible for — see prompts/outreach-generation.ts
+ * for the anti-fabrication rules. `personalizationPoints` must trace back
+ * to verified lead_analysis/business fields; nothing here is a free-form
+ * claim about the business itself.
+ */
+export const OutreachCopySchema = z.object({
+  subject: z.string().min(1).max(200),
+  body: z.string().min(1),
+  cta: z.string().min(1),
+  personalizationPoints: z.array(z.string().min(1)).min(1),
+});
+export type OutreachCopyOutput = z.infer<typeof OutreachCopySchema>;
+
+/**
+ * Request body for POST /api/outreach/generate.
+ */
+export const GenerateOutreachRequestSchema = z.object({
+  leadId: z.uuid(),
+});
+export type GenerateOutreachRequest = z.infer<typeof GenerateOutreachRequestSchema>;
+
+/**
+ * Request body for POST /api/outreach/prepare-batch.
+ */
+export const PrepareOutreachBatchRequestSchema = z.object({
+  limit: z.number().int().min(1).max(100).default(10),
+});
+export type PrepareOutreachBatchRequest = z.infer<typeof PrepareOutreachBatchRequestSchema>;
+
+/**
+ * Request body for POST /api/outreach/unsubscribe. Deliberately minimal —
+ * this is the one endpoint in the app meant to be called unauthenticated,
+ * by the recipient themselves, so it accepts nothing beyond the address
+ * being suppressed.
+ */
+export const UnsubscribeRequestSchema = z.object({
+  email: z.string().email(),
+});
+export type UnsubscribeRequest = z.infer<typeof UnsubscribeRequestSchema>;

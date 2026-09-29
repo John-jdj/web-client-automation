@@ -39,3 +39,35 @@ export async function isSuppressed(contact: {
 
   return false;
 }
+
+/**
+ * Adds an email (or phone) to the suppression list, so no future outreach
+ * of any kind is generated or sent to it (isSuppressed above, and every
+ * outreach eligibility check, reads this table). Idempotent by checking
+ * first — `email` is unique in the schema, so a blind insert would error
+ * on a repeat call for the same address.
+ */
+export async function addSuppression(input: {
+  email?: string | null;
+  phone?: string | null;
+  reason?: string | null;
+  source?: string | null;
+}): Promise<void> {
+  if (!input.email && !input.phone) return;
+
+  const alreadySuppressed = await isSuppressed({
+    phone: input.phone ?? null,
+    email: input.email ?? null,
+  });
+  if (alreadySuppressed) return;
+
+  const supabase = await createClient();
+  const { error } = await supabase.from("suppression_list").insert({
+    email: input.email ?? null,
+    phone: input.phone ?? null,
+    reason: input.reason ?? null,
+    source: input.source ?? null,
+  });
+
+  if (error) throw error;
+}

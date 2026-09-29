@@ -34,6 +34,29 @@ export async function countTodaysAiAnalyses(): Promise<number> {
 }
 
 /**
+ * How many `email` / `outreach_send` api_usage rows were logged today
+ * (UTC), for enforcing `automation_settings.daily_outreach_limit`. Only
+ * counts real successful sends — see lib/outreach/send-outreach.ts, which
+ * logs this row only after the email provider confirms success (DEMO_MODE
+ * or real), never on a blocked/failed attempt.
+ */
+export async function countTodaysOutreachSends(): Promise<number> {
+  const supabase = await createClient();
+  const startOfDayUtc = new Date();
+  startOfDayUtc.setUTCHours(0, 0, 0, 0);
+
+  const { count, error } = await supabase
+    .from("api_usage")
+    .select("*", { count: "exact", head: true })
+    .eq("provider", "email")
+    .eq("operation", "outreach_send")
+    .gte("created_at", startOfDayUtc.toISOString());
+
+  if (error) throw error;
+  return count ?? 0;
+}
+
+/**
  * How many `vercel` / `demo_deployment` api_usage rows were logged today
  * (UTC), for enforcing `automation_settings.daily_deployment_limit`.
  */

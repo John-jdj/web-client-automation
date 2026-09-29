@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import DemoActions from "./DemoActions";
+import OutreachActions from "./OutreachActions";
 
 export const dynamic = "force-dynamic";
 
@@ -83,6 +84,16 @@ export default async function LeadDetailPage({
         .limit(1)
         .maybeSingle()
     : { data: null };
+
+  const { data: outreach } = await supabase
+    .from("outreach_messages")
+    .select("id, status, recipient_email, subject, message_body")
+    .eq("lead_id", id)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const demoUrl = deployment && deployment.status === "READY" ? deployment.deployment_url : null;
 
   const rawResponse = analysis?.raw_response as
     | { data?: { websiteNeed?: { level?: string; reason?: string } } }
@@ -229,6 +240,26 @@ export default async function LeadDetailPage({
           initialDemo={demo ?? null}
           initialDeployment={
             deployment ? { deploymentUrl: deployment.deployment_url, status: deployment.status } : null
+          }
+        />
+      </section>
+
+      <section className="mt-6 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+        <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Outreach</h2>
+        <OutreachActions
+          leadId={id}
+          eligible={lead.qualification_status === "QUALIFIED" && Boolean(business?.email)}
+          initialMessage={
+            outreach
+              ? {
+                  id: outreach.id,
+                  status: outreach.status,
+                  recipientEmail: outreach.recipient_email ?? "",
+                  subject: outreach.subject ?? "",
+                  body: outreach.message_body ?? "",
+                  demoUrl,
+                }
+              : null
           }
         />
       </section>
