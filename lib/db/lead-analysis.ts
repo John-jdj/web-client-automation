@@ -1,14 +1,18 @@
 import "server-only";
 import { createClient } from "@/lib/supabase/server";
 import type { Database } from "@/lib/supabase/database.types";
+import type { AppSupabaseClient } from "@/lib/supabase/types";
 
 export type LeadAnalysis = Database["public"]["Tables"]["lead_analysis"]["Row"];
 export type LeadAnalysisInsert = Database["public"]["Tables"]["lead_analysis"]["Insert"];
 
 /** Most recent analysis for a lead, or null if it has never been analyzed. */
-export async function getLatestLeadAnalysis(leadId: string): Promise<LeadAnalysis | null> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
+export async function getLatestLeadAnalysis(
+  leadId: string,
+  supabase?: AppSupabaseClient
+): Promise<LeadAnalysis | null> {
+  const client = supabase ?? (await createClient());
+  const { data, error } = await client
     .from("lead_analysis")
     .select("*")
     .eq("lead_id", leadId)
@@ -20,9 +24,12 @@ export async function getLatestLeadAnalysis(leadId: string): Promise<LeadAnalysi
   return data;
 }
 
-export async function createLeadAnalysis(input: LeadAnalysisInsert): Promise<LeadAnalysis> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
+export async function createLeadAnalysis(
+  input: LeadAnalysisInsert,
+  supabase?: AppSupabaseClient
+): Promise<LeadAnalysis> {
+  const client = supabase ?? (await createClient());
+  const { data, error } = await client
     .from("lead_analysis")
     .insert(input)
     .select("*")

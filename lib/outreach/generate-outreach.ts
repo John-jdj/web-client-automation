@@ -14,7 +14,9 @@ import {
 import { generateOutreachContent } from "@/lib/outreach/generate-outreach-content";
 import { OutreachCopySchema } from "@/lib/validation/schemas";
 import { AnalysisError } from "@/lib/ai/errors";
+import { getRequestContext, type AutomationContext } from "@/lib/automation/context";
 import type { OutreachContentInput } from "@/prompts/outreach-generation";
+import type { AppSupabaseClient } from "@/lib/supabase/types";
 
 export type GenerateOutreachIneligibleCode =
   | "LEAD_NOT_FOUND"
@@ -58,7 +60,8 @@ export interface GenerateOutreachResult {
  */
 async function assertOutreachEligible(
   lead: NonNullable<Awaited<ReturnType<typeof getLead>>>,
-  business: NonNullable<Awaited<ReturnType<typeof getBusiness>>>
+  business: NonNullable<Awaited<ReturnType<typeof getBusiness>>>,
+  supabase: AppSupabaseClient
 ): Promise<void> {
   if (lead.status === "DO_NOT_CONTACT") {
     throw new GenerateOutreachIneligibleError("DO_NOT_CONTACT", "This lead is marked DO_NOT_CONTACT.");
@@ -79,11 +82,11 @@ async function assertOutreachEligible(
   if (!emailLooksValid) {
     throw new GenerateOutreachIneligibleError("MISSING_EMAIL", "This business's email on file is invalid.");
   }
-  const suppressed = await isSuppressed({ phone: business.phone, email: business.email });
+  const suppressed = await isSuppressed({ phone: business.phone, email: business.email }, supabase);
   if (suppressed) {
     throw new GenerateOutreachIneligibleError("SUPPRESSED", "This business is on the suppression list.");
   }
-  const active = await hasActiveOrSentOutreach(lead.id);
+  const active = await hasActiveOrSentOutreach(lead.id, supabase);
   if (active) {
     throw new GenerateOutreachIneligibleError(
       "DUPLICATE_ACTIVE_OUTREACH",
@@ -98,26 +101,37 @@ async function assertOutreachEligible(
  * from ONLY verified fields (business record + Step 7's already-validated
  * lead_analysis + Step 9's deployed demo URL, if any) → generate copy
  * (Claude or, in DEMO_MODE, the deterministic mock) → validate → save as
- * a DRAFT. Never sends anything — see lib/outreach/send-outreach.ts.
+ * a DRAFT. Never sends anything — see lib/outreach/send-outreach.ts, which
+ * the automation runner (Step 11) also never calls.
+ *
+ * `context` defaults to the normal RLS-scoped request context (every
+ * existing route/UI caller is unaffected). Passing `getServiceContext()`
+ * is for trusted server-side automation execution only — see
+ * lib/automation/context.ts.
  */
-export async function generateOutreach(leadId: string): Promise<GenerateOutreachResult> {
-  const lead = await getLead(leadId);
+export async function generateOutreach(
+  leadId: string,
+  context?: AutomationContext
+): Promise<GenerateOutreachResult> {
+  const { supabase } = context ?? (await getRequestContext());
+
+  const lead = await getLead(leadId, supabase);
   if (!lead) {
     throw new GenerateOutreachIneligibleError("LEAD_NOT_FOUND", "Lead not found.");
   }
-  const business = await getBusiness(lead.business_id);
+  const business = await getBusiness(lead.business_id, supabase);
   if (!business) {
     throw new GenerateOutreachIneligibleError("BUSINESS_NOT_FOUND", "Business not found for this lead.");
   }
 
-  const existing = await getLatestOutreachForLead(leadId);
+  const existing = await getLatestOutreachForLead(leadId, supabase);
   if (existing && existing.status === "DRAFT") {
     return toResult(existing, true);
   }
 
-  await assertOutreachEligible(lead, business);
+  await assertOutreachEligible(lead, business, supabase);
 
-  const analysis = await getLatestLeadAnalysis(leadId);
+  const analysis = await getLatestLeadAnalysis(leadId, supabase);
   if (!analysis) {
     throw new GenerateOutreachIneligibleError(
       "ANALYSIS_MISSING",
@@ -125,8 +139,8 @@ export async function generateOutreach(leadId: string): Promise<GenerateOutreach
     );
   }
 
-  const demo = await getLatestDemoForLead(leadId);
-  const deployment = demo ? await getLatestDeploymentForDemo(demo.id) : null;
+  const demo = await getLatestDemoForLead(leadId, supabase);
+  const deployment = demo ? await getLatestDeploymentForDemo(demo.id, supabase) : null;
   const demoUrl = deployment && deployment.status === "READY" ? deployment.deployment_url : null;
 
   const contentInput: OutreachContentInput = {
@@ -153,14 +167,17 @@ export async function generateOutreach(leadId: string): Promise<GenerateOutreach
     );
   }
 
-  const message = await createOutreachMessage({
-    lead_id: leadId,
-    channel: "email",
-    recipient_email: business.email,
-    subject: validated.data.subject,
-    message_body: validated.data.body,
-    status: "DRAFT",
-  });
+  const message = await createOutreachMessage(
+    {
+      lead_id: leadId,
+      channel: "email",
+      recipient_email: business.email,
+      subject: validated.data.subject,
+      message_body: validated.data.body,
+      status: "DRAFT",
+    },
+    supabase
+  );
 
   return {
     alreadyGenerated: false,

@@ -2,12 +2,13 @@ import "server-only";
 import { createClient } from "@/lib/supabase/server";
 import { BusinessInputSchema, type BusinessInput } from "@/lib/validation/schemas";
 import type { Database } from "@/lib/supabase/database.types";
+import type { AppSupabaseClient } from "@/lib/supabase/types";
 
 export type Business = Database["public"]["Tables"]["businesses"]["Row"];
 
-export async function getBusiness(id: string): Promise<Business | null> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
+export async function getBusiness(id: string, supabase?: AppSupabaseClient): Promise<Business | null> {
+  const client = supabase ?? (await createClient());
+  const { data, error } = await client
     .from("businesses")
     .select("*")
     .eq("id", id)
@@ -18,10 +19,11 @@ export async function getBusiness(id: string): Promise<Business | null> {
 }
 
 export async function findBusinessByPlaceId(
-  googlePlaceId: string
+  googlePlaceId: string,
+  supabase?: AppSupabaseClient
 ): Promise<Business | null> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
+  const client = supabase ?? (await createClient());
+  const { data, error } = await client
     .from("businesses")
     .select("*")
     .eq("google_place_id", googlePlaceId)
@@ -31,10 +33,10 @@ export async function findBusinessByPlaceId(
   return data;
 }
 
-export async function createBusiness(input: BusinessInput): Promise<Business> {
+export async function createBusiness(input: BusinessInput, supabase?: AppSupabaseClient): Promise<Business> {
   const parsed = BusinessInputSchema.parse(input);
-  const supabase = await createClient();
-  const { data, error } = await supabase
+  const client = supabase ?? (await createClient());
+  const { data, error } = await client
     .from("businesses")
     .insert(parsed)
     .select("*")
@@ -57,14 +59,17 @@ export interface UpsertBusinessResult {
  *     (e.g. reprocessing older data).
  * Falls through to insert only when neither match is found.
  */
-export async function upsertBusiness(input: BusinessInput): Promise<UpsertBusinessResult> {
+export async function upsertBusiness(
+  input: BusinessInput,
+  supabase?: AppSupabaseClient
+): Promise<UpsertBusinessResult> {
   const parsed = BusinessInputSchema.parse(input);
-  const supabase = await createClient();
+  const client = supabase ?? (await createClient());
 
   if (parsed.google_place_id) {
-    const existing = await findBusinessByPlaceId(parsed.google_place_id);
+    const existing = await findBusinessByPlaceId(parsed.google_place_id, client);
     if (existing) {
-      const { data, error } = await supabase
+      const { data, error } = await client
         .from("businesses")
         .update(parsed)
         .eq("id", existing.id)
@@ -76,7 +81,7 @@ export async function upsertBusiness(input: BusinessInput): Promise<UpsertBusine
   }
 
   if (parsed.normalized_business_name && (parsed.phone || parsed.address)) {
-    let query = supabase
+    let query = client
       .from("businesses")
       .select("*")
       .eq("normalized_business_name", parsed.normalized_business_name);
@@ -86,7 +91,7 @@ export async function upsertBusiness(input: BusinessInput): Promise<UpsertBusine
     if (error) throw error;
 
     if (matches && matches.length > 0) {
-      const { data, error: updateError } = await supabase
+      const { data, error: updateError } = await client
         .from("businesses")
         .update(parsed)
         .eq("id", matches[0].id)
@@ -97,7 +102,7 @@ export async function upsertBusiness(input: BusinessInput): Promise<UpsertBusine
     }
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await client
     .from("businesses")
     .insert(parsed)
     .select("*")

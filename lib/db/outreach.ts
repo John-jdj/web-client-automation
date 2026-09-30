@@ -6,6 +6,7 @@ import {
   type OutreachMessageInput,
 } from "@/lib/validation/schemas";
 import type { Database } from "@/lib/supabase/database.types";
+import type { AppSupabaseClient } from "@/lib/supabase/types";
 
 export type OutreachMessage = Database["public"]["Tables"]["outreach_messages"]["Row"];
 export type OutreachMessageUpdate = Database["public"]["Tables"]["outreach_messages"]["Update"];
@@ -14,11 +15,12 @@ export type OutreachMessageUpdate = Database["public"]["Tables"]["outreach_messa
 export const ACTIVE_OR_SENT_STATUSES = ["QUEUED", "SENDING", "SENT"] as const;
 
 export async function createOutreachMessage(
-  input: OutreachMessageInput
+  input: OutreachMessageInput,
+  supabase?: AppSupabaseClient
 ): Promise<OutreachMessage> {
   const parsed = OutreachMessageSchema.parse(input);
-  const supabase = await createClient();
-  const { data, error } = await supabase
+  const client = supabase ?? (await createClient());
+  const { data, error } = await client
     .from("outreach_messages")
     .insert(parsed)
     .select("*")
@@ -28,9 +30,12 @@ export async function createOutreachMessage(
   return data;
 }
 
-export async function getOutreachMessage(id: string): Promise<OutreachMessage | null> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
+export async function getOutreachMessage(
+  id: string,
+  supabase?: AppSupabaseClient
+): Promise<OutreachMessage | null> {
+  const client = supabase ?? (await createClient());
+  const { data, error } = await client
     .from("outreach_messages")
     .select("*")
     .eq("id", id)
@@ -42,10 +47,11 @@ export async function getOutreachMessage(id: string): Promise<OutreachMessage | 
 
 export async function updateOutreachMessage(
   id: string,
-  updates: OutreachMessageUpdate
+  updates: OutreachMessageUpdate,
+  supabase?: AppSupabaseClient
 ): Promise<OutreachMessage> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
+  const client = supabase ?? (await createClient());
+  const { data, error } = await client
     .from("outreach_messages")
     .update(updates)
     .eq("id", id)
@@ -77,9 +83,12 @@ export async function getOutreachMessageAsService(id: string): Promise<OutreachM
 }
 
 /** Most recent outreach message for a lead, or null if none exists yet. */
-export async function getLatestOutreachForLead(leadId: string): Promise<OutreachMessage | null> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
+export async function getLatestOutreachForLead(
+  leadId: string,
+  supabase?: AppSupabaseClient
+): Promise<OutreachMessage | null> {
+  const client = supabase ?? (await createClient());
+  const { data, error } = await client
     .from("outreach_messages")
     .select("*")
     .eq("lead_id", leadId)
@@ -97,9 +106,12 @@ export async function getLatestOutreachForLead(leadId: string): Promise<Outreach
  * this lead? Excludes DRAFT/CANCELLED/FAILED — those don't block a new
  * attempt. Safe to call repeatedly (read-only).
  */
-export async function hasActiveOrSentOutreach(leadId: string): Promise<boolean> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
+export async function hasActiveOrSentOutreach(
+  leadId: string,
+  supabase?: AppSupabaseClient
+): Promise<boolean> {
+  const client = supabase ?? (await createClient());
+  const { data, error } = await client
     .from("outreach_messages")
     .select("id")
     .eq("lead_id", leadId)

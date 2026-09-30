@@ -2,14 +2,15 @@ import "server-only";
 import { createClient } from "@/lib/supabase/server";
 import { DemoInputSchema, type DemoInput } from "@/lib/validation/schemas";
 import type { Database } from "@/lib/supabase/database.types";
+import type { AppSupabaseClient } from "@/lib/supabase/types";
 
 export type Demo = Database["public"]["Tables"]["demos"]["Row"];
 export type DemoUpdate = Database["public"]["Tables"]["demos"]["Update"];
 
-export async function createDemo(input: DemoInput): Promise<Demo> {
+export async function createDemo(input: DemoInput, supabase?: AppSupabaseClient): Promise<Demo> {
   const parsed = DemoInputSchema.parse(input);
-  const supabase = await createClient();
-  const { data, error } = await supabase
+  const client = supabase ?? (await createClient());
+  const { data, error } = await client
     .from("demos")
     .insert(parsed)
     .select("*")
@@ -19,9 +20,9 @@ export async function createDemo(input: DemoInput): Promise<Demo> {
   return data;
 }
 
-export async function updateDemo(id: string, updates: DemoUpdate): Promise<Demo> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
+export async function updateDemo(id: string, updates: DemoUpdate, supabase?: AppSupabaseClient): Promise<Demo> {
+  const client = supabase ?? (await createClient());
+  const { data, error } = await client
     .from("demos")
     .update(updates)
     .eq("id", id)
@@ -32,9 +33,9 @@ export async function updateDemo(id: string, updates: DemoUpdate): Promise<Demo>
   return data;
 }
 
-export async function getDemo(id: string): Promise<Demo | null> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
+export async function getDemo(id: string, supabase?: AppSupabaseClient): Promise<Demo | null> {
+  const client = supabase ?? (await createClient());
+  const { data, error } = await client
     .from("demos")
     .select("*")
     .eq("id", id)
@@ -45,9 +46,9 @@ export async function getDemo(id: string): Promise<Demo | null> {
 }
 
 /** Most recent demo for a lead, or null if none has been generated yet. */
-export async function getLatestDemoForLead(leadId: string): Promise<Demo | null> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
+export async function getLatestDemoForLead(leadId: string, supabase?: AppSupabaseClient): Promise<Demo | null> {
+  const client = supabase ?? (await createClient());
+  const { data, error } = await client
     .from("demos")
     .select("*")
     .eq("lead_id", leadId)

@@ -1,5 +1,4 @@
 import "server-only";
-import { createClient } from "@/lib/supabase/server";
 import { getLead } from "@/lib/db/leads";
 import { getBusiness } from "@/lib/db/businesses";
 import { getDemo, updateDemo } from "@/lib/db/demos";
@@ -13,7 +12,9 @@ import { renderStaticDemoHtml } from "@/lib/vercel/render-static-demo";
 import { DeploymentError } from "@/lib/vercel/errors";
 import { VERCEL_PROVIDER } from "@/lib/vercel/config";
 import { DemoContentSchema } from "@/lib/validation/schemas";
+import { getRequestContext, type AutomationContext } from "@/lib/automation/context";
 import type { DemoStatus, DemoDeploymentStatus } from "@/lib/supabase/database.types";
+import type { AppSupabaseClient } from "@/lib/supabase/types";
 
 const MAX_ATTEMPTS = 2;
 
@@ -66,25 +67,31 @@ function toResult(deployment: DemoDeployment, alreadyDeployed: boolean): DeployD
 
 /**
  * Runs Step 9 for one demo: verify it (and its lead/business) exist and
- * are visible to the caller (RLS-scoped `createClient()`, same pattern as
- * lib/demo/generate-demo.ts — an unauthorized user simply gets "not
- * found", never a distinct authorization error that would leak
- * existence) → render a secrets-free static page → deploy via the
- * DEMO_MODE/real Vercel adapter → persist the result. Idempotent unless
- * the latest deployment is FAILED/CANCELLED, in which case a fresh
+ * are visible to the caller (RLS-scoped by default — an unauthorized user
+ * simply gets "not found", never a distinct authorization error that
+ * would leak existence) → render a secrets-free static page → deploy via
+ * the DEMO_MODE/real Vercel adapter → persist the result. Idempotent
+ * unless the latest deployment is FAILED/CANCELLED, in which case a fresh
  * attempt is made and recorded as a new demo_deployments row.
+ *
+ * `context` defaults to the normal RLS-scoped request context (every
+ * existing route/UI caller is unaffected). Passing `getServiceContext()`
+ * is for trusted server-side automation execution only — see
+ * lib/automation/context.ts.
  */
-export async function deployDemo(demoId: string): Promise<DeployDemoResult> {
-  const demo = await getDemo(demoId);
+export async function deployDemo(demoId: string, context?: AutomationContext): Promise<DeployDemoResult> {
+  const { supabase } = context ?? (await getRequestContext());
+
+  const demo = await getDemo(demoId, supabase);
   if (!demo) {
     throw new DeployDemoIneligibleError("DEMO_NOT_FOUND", "Demo not found.");
   }
 
-  const lead = await getLead(demo.lead_id);
+  const lead = await getLead(demo.lead_id, supabase);
   if (!lead) {
     throw new DeployDemoIneligibleError("LEAD_NOT_FOUND", "Lead not found for this demo.");
   }
-  const business = await getBusiness(lead.business_id);
+  const business = await getBusiness(lead.business_id, supabase);
   if (!business) {
     throw new DeployDemoIneligibleError("BUSINESS_NOT_FOUND", "Business not found for this demo.");
   }
@@ -96,7 +103,7 @@ export async function deployDemo(demoId: string): Promise<DeployDemoResult> {
     );
   }
 
-  const existing = await getLatestDeploymentForDemo(demoId);
+  const existing = await getLatestDeploymentForDemo(demoId, supabase);
   if (existing && ACTIVE_OR_SUCCESSFUL.includes(existing.status)) {
     return toResult(existing, true);
   }
@@ -112,7 +119,7 @@ export async function deployDemo(demoId: string): Promise<DeployDemoResult> {
   const html = renderStaticDemoHtml(business.business_name, parsedContent.data);
   const attemptBase = existing?.status === "FAILED" ? existing.attempt_count : 0;
 
-  await updateDemo(demoId, { status: "DEPLOYMENT_PENDING" });
+  await updateDemo(demoId, { status: "DEPLOYMENT_PENDING" }, supabase);
 
   let lastError: unknown;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -120,24 +127,31 @@ export async function deployDemo(demoId: string): Promise<DeployDemoResult> {
     try {
       const result = await deployToVercel({ deploymentName: demo.slug, html });
 
-      const deployment = await createDeployment({
-        demo_id: demoId,
-        provider: VERCEL_PROVIDER,
-        deployment_id: result.deploymentId,
-        deployment_url: result.deploymentUrl,
-        status: result.status,
-        attempt_count: attemptBase + attempt,
-        started_at: startedAt,
-        completed_at: new Date().toISOString(),
-      });
+      const deployment = await createDeployment(
+        {
+          demo_id: demoId,
+          provider: VERCEL_PROVIDER,
+          deployment_id: result.deploymentId,
+          deployment_url: result.deploymentUrl,
+          status: result.status,
+          attempt_count: attemptBase + attempt,
+          started_at: startedAt,
+          completed_at: new Date().toISOString(),
+        },
+        supabase
+      );
 
-      await updateDemo(demoId, {
-        status: result.status === "READY" ? "DEPLOYED" : "FAILED",
-        deployment_url: result.deploymentUrl,
-      });
+      await updateDemo(
+        demoId,
+        {
+          status: result.status === "READY" ? "DEPLOYED" : "FAILED",
+          deployment_url: result.deploymentUrl,
+        },
+        supabase
+      );
 
       if (!result.usedMock) {
-        await logDeploymentUsage();
+        await logDeploymentUsage(supabase);
       }
 
       return toResult(deployment, false);
@@ -160,23 +174,25 @@ export async function deployDemo(demoId: string): Promise<DeployDemoResult> {
   // the batch route) can see exactly what happened without needing to
   // catch anything themselves; only the thrown error decides the HTTP
   // response, mirroring lib/ai/analyze-lead.ts's identical shape.
-  await createDeployment({
-    demo_id: demoId,
-    provider: VERCEL_PROVIDER,
-    status: "FAILED",
-    error_message: message,
-    attempt_count: attemptBase + MAX_ATTEMPTS,
-    started_at: new Date().toISOString(),
-    completed_at: new Date().toISOString(),
-  });
-  await updateDemo(demoId, { status: "FAILED" });
-  await logDeploymentError(demoId, lastError);
+  await createDeployment(
+    {
+      demo_id: demoId,
+      provider: VERCEL_PROVIDER,
+      status: "FAILED",
+      error_message: message,
+      attempt_count: attemptBase + MAX_ATTEMPTS,
+      started_at: new Date().toISOString(),
+      completed_at: new Date().toISOString(),
+    },
+    supabase
+  );
+  await updateDemo(demoId, { status: "FAILED" }, supabase);
+  await logDeploymentError(demoId, lastError, supabase);
 
   throw lastError instanceof DeploymentError ? lastError : new DeploymentError("UNKNOWN", message, false);
 }
 
-async function logDeploymentUsage() {
-  const supabase = await createClient();
+async function logDeploymentUsage(supabase: AppSupabaseClient) {
   await supabase.from("api_usage").insert({
     provider: VERCEL_PROVIDER,
     operation: "demo_deployment",
@@ -184,15 +200,14 @@ async function logDeploymentUsage() {
   });
 }
 
-async function logDeploymentError(demoId: string, err: unknown) {
-  const supabase = await createClient();
+async function logDeploymentError(demoId: string, err: unknown, supabase: AppSupabaseClient) {
   const message =
     err instanceof DeploymentError
       ? err.message
       : err instanceof Error
         ? err.message
         : "Unknown demo deployment error.";
-  const demo = await getDemo(demoId);
+  const demo = await getDemo(demoId, supabase);
   await supabase.from("error_logs").insert({
     service: "demo_deployment",
     message,

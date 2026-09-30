@@ -1,5 +1,4 @@
 import "server-only";
-import { createClient } from "@/lib/supabase/server";
 import { searchBusinesses } from "@/lib/google/places";
 import { mapGooglePlaceToBusiness, normalizeBusinessName } from "@/lib/google/normalize";
 import { DiscoveryError } from "@/lib/google/errors";
@@ -7,8 +6,10 @@ import { upsertBusiness, type Business } from "@/lib/db/businesses";
 import { createLead, getLatestLeadForBusiness, shouldCreateLead } from "@/lib/db/leads";
 import { isSuppressed } from "@/lib/db/suppression";
 import { resolveLeadDecision } from "@/lib/discovery/lead-rules";
+import { getRequestContext, type AutomationContext } from "@/lib/automation/context";
 import type { DiscoveryRequest } from "@/lib/validation/schemas";
 import type { LeadStatus } from "@/lib/supabase/database.types";
+import type { AppSupabaseClient } from "@/lib/supabase/types";
 
 export interface DiscoveryBusinessResult {
   id: string;
@@ -49,9 +50,18 @@ export interface DiscoveryRunResult {
  * no official website (skipping suppressed/DO_NOT_CONTACT businesses), and
  * record the execution in `automation_runs` / `api_usage` / `error_logs`.
  * Per-business failures are collected and logged, and don't abort the run.
+ *
+ * `context` defaults to the normal RLS-scoped request context — every
+ * existing caller (the discovery UI route) keeps its exact current
+ * behavior. Passing `getServiceContext()` (lib/automation/context.ts) is
+ * for trusted server-side automation execution only (Step 11.2's
+ * automation runner) — see that module for why.
  */
-export async function runDiscovery(request: DiscoveryRequest): Promise<DiscoveryRunResult> {
-  const supabase = await createClient();
+export async function runDiscovery(
+  request: DiscoveryRequest,
+  context?: AutomationContext
+): Promise<DiscoveryRunResult> {
+  const { supabase } = context ?? (await getRequestContext());
 
   const { data: run, error: runError } = await supabase
     .from("automation_runs")
@@ -109,37 +119,40 @@ export async function runDiscovery(request: DiscoveryRequest): Promise<Discovery
         }
 
         const checkedAt = new Date().toISOString();
-        const { business, isNew } = await upsertBusiness({
-          google_place_id: normalized.googlePlaceId,
-          business_name: normalized.businessName,
-          normalized_business_name: normalizeBusinessName(normalized.businessName),
-          category: normalized.category,
-          phone: normalized.phone,
-          website_url: normalized.websiteUrl,
-          has_website: normalized.hasWebsite,
-          website_checked_at: checkedAt,
-          website_check_status: "CHECKED",
-          address: normalized.address,
-          city: normalized.city,
-          state: normalized.state,
-          country: normalized.country,
-          postal_code: normalized.postalCode,
-          latitude: normalized.latitude,
-          longitude: normalized.longitude,
-          rating: normalized.rating,
-          review_count: normalized.reviewCount,
-          google_maps_url: normalized.googleMapsUrl,
-          opening_hours: normalized.openingHours,
-          source: usedMock ? "google_places_demo" : "google_places",
-          raw_data: normalized.rawData,
-        });
+        const { business, isNew } = await upsertBusiness(
+          {
+            google_place_id: normalized.googlePlaceId,
+            business_name: normalized.businessName,
+            normalized_business_name: normalizeBusinessName(normalized.businessName),
+            category: normalized.category,
+            phone: normalized.phone,
+            website_url: normalized.websiteUrl,
+            has_website: normalized.hasWebsite,
+            website_checked_at: checkedAt,
+            website_check_status: "CHECKED",
+            address: normalized.address,
+            city: normalized.city,
+            state: normalized.state,
+            country: normalized.country,
+            postal_code: normalized.postalCode,
+            latitude: normalized.latitude,
+            longitude: normalized.longitude,
+            rating: normalized.rating,
+            review_count: normalized.reviewCount,
+            google_maps_url: normalized.googleMapsUrl,
+            opening_hours: normalized.openingHours,
+            source: usedMock ? "google_places_demo" : "google_places",
+            raw_data: normalized.rawData,
+          },
+          supabase
+        );
 
         if (isNew) saved += 1;
         else duplicates += 1;
         if (business.has_website) withWebsite += 1;
         else withoutWebsite += 1;
 
-        const leadResult = await ensureLeadForBusiness(business);
+        const leadResult = await ensureLeadForBusiness(business, supabase);
         if (leadResult.leadCreated) newLeads += 1;
 
         results.push({
@@ -240,8 +253,11 @@ interface LeadResolution {
  *  - the suppression list — a suppressed business is never given a new
  *    outreach-eligible lead, even though it still appears in results.
  */
-async function ensureLeadForBusiness(business: Business): Promise<LeadResolution> {
-  const existing = await getLatestLeadForBusiness(business.id);
+async function ensureLeadForBusiness(
+  business: Business,
+  supabase: AppSupabaseClient
+): Promise<LeadResolution> {
+  const existing = await getLatestLeadForBusiness(business.id, supabase);
   const existingStatus = existing?.status ?? null;
 
   if (!shouldCreateLead(business.has_website, existingStatus)) {
@@ -253,7 +269,7 @@ async function ensureLeadForBusiness(business: Business): Promise<LeadResolution
     };
   }
 
-  const suppressed = await isSuppressed({ phone: business.phone, email: business.email });
+  const suppressed = await isSuppressed({ phone: business.phone, email: business.email }, supabase);
   const create = resolveLeadDecision({
     hasWebsite: business.has_website,
     existingLeadStatus: existingStatus,
@@ -263,14 +279,17 @@ async function ensureLeadForBusiness(business: Business): Promise<LeadResolution
     return { leadId: null, leadStatus: existingStatus, leadCreated: false, suppressed };
   }
 
-  const lead = await createLead({
-    business_id: business.id,
-    status: "NEW",
-    priority: "MEDIUM",
-    qualification_status: "PENDING",
-    lead_score: 0,
-    source: "google_places",
-  });
+  const lead = await createLead(
+    {
+      business_id: business.id,
+      status: "NEW",
+      priority: "MEDIUM",
+      qualification_status: "PENDING",
+      lead_score: 0,
+      source: "google_places",
+    },
+    supabase
+  );
 
   return { leadId: lead.id, leadStatus: lead.status, leadCreated: true, suppressed: false };
 }

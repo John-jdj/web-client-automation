@@ -1,5 +1,4 @@
 import "server-only";
-import { createClient } from "@/lib/supabase/server";
 import { getLead, updateLead } from "@/lib/db/leads";
 import { getBusiness, type Business } from "@/lib/db/businesses";
 import { getLatestLeadAnalysis } from "@/lib/db/lead-analysis";
@@ -9,7 +8,9 @@ import { generateDemoContent } from "@/lib/demo/generate-demo-content";
 import { buildDemoSlug } from "@/lib/demo/slug";
 import { DemoContentSchema } from "@/lib/validation/schemas";
 import { AnalysisError } from "@/lib/ai/errors";
+import { getRequestContext, type AutomationContext } from "@/lib/automation/context";
 import type { DemoContentInput } from "@/prompts/demo-generation";
+import type { AppSupabaseClient } from "@/lib/supabase/types";
 
 const MAX_ATTEMPTS = 2;
 
@@ -53,16 +54,24 @@ export interface GenerateDemoResult {
  * ever written once fully validated (never a partial/invalid one).
  * "Preview Demo" is served by app/demo/[id]/page.tsx, which just reads
  * back the saved `generated_content` — no deployment involved.
+ *
+ * `context` defaults to the normal RLS-scoped request context (every
+ * existing route/UI caller is unaffected). Passing `getServiceContext()`
+ * is for trusted server-side automation execution only — see
+ * lib/automation/context.ts.
  */
 export async function generateDemo(
   leadId: string,
-  options: { regenerate?: boolean } = {}
+  options: { regenerate?: boolean } = {},
+  context?: AutomationContext
 ): Promise<GenerateDemoResult> {
-  const lead = await getLead(leadId);
+  const { supabase } = context ?? (await getRequestContext());
+
+  const lead = await getLead(leadId, supabase);
   if (!lead) {
     throw new GenerateDemoIneligibleError("LEAD_NOT_FOUND", "Lead not found.");
   }
-  const business = await getBusiness(lead.business_id);
+  const business = await getBusiness(lead.business_id, supabase);
   if (!business) {
     throw new GenerateDemoIneligibleError("BUSINESS_NOT_FOUND", "Business not found for this lead.");
   }
@@ -72,7 +81,7 @@ export async function generateDemo(
       "This lead has not been qualified — run analysis first."
     );
   }
-  const analysis = await getLatestLeadAnalysis(leadId);
+  const analysis = await getLatestLeadAnalysis(leadId, supabase);
   if (!analysis) {
     throw new GenerateDemoIneligibleError(
       "ANALYSIS_MISSING",
@@ -81,7 +90,7 @@ export async function generateDemo(
   }
 
   if (!options.regenerate) {
-    const existing = await getLatestDemoForLead(leadId);
+    const existing = await getLatestDemoForLead(leadId, supabase);
     if (existing && existing.status === "GENERATED") {
       const content = existing.generated_content as { templateSlug?: string; templateName?: string } | null;
       return {
@@ -100,7 +109,7 @@ export async function generateDemo(
 
   const template = selectTemplate(business.category);
   const previousStatus = lead.status;
-  await updateLead(leadId, { status: "DEMO_PENDING" });
+  await updateLead(leadId, { status: "DEMO_PENDING" }, supabase);
 
   const contentInput: DemoContentInput = {
     businessName: business.business_name,
@@ -121,7 +130,7 @@ export async function generateDemo(
   let lastError: unknown;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      return await runGenerationOnce(leadId, business, template, contentInput);
+      return await runGenerationOnce(leadId, business, template, contentInput, supabase);
     } catch (err) {
       lastError = err;
       const retryable = err instanceof AnalysisError ? err.retryable || err.code === "INVALID_RESPONSE" : false;
@@ -129,8 +138,8 @@ export async function generateDemo(
     }
   }
 
-  await updateLead(leadId, { status: previousStatus });
-  await logDemoError(leadId, lastError);
+  await updateLead(leadId, { status: previousStatus }, supabase);
+  await logDemoError(leadId, lastError, supabase);
   const message =
     lastError instanceof AnalysisError
       ? lastError.message
@@ -144,7 +153,8 @@ async function runGenerationOnce(
   leadId: string,
   business: Business,
   template: DemoTemplate,
-  contentInput: DemoContentInput
+  contentInput: DemoContentInput,
+  supabase: AppSupabaseClient
 ): Promise<GenerateDemoResult> {
   const { data: copy, usedMock, model, promptVersion, usage } = await generateDemoContent(contentInput);
 
@@ -171,19 +181,22 @@ async function runGenerationOnce(
 
   const slug = buildDemoSlug(business.business_name, leadId);
 
-  const demo = await createDemo({
-    lead_id: leadId,
-    template_id: null,
-    name: `${business.business_name} — Demo Website`,
-    slug,
-    status: "GENERATED",
-    generated_content: validated.data,
-  });
+  const demo = await createDemo(
+    {
+      lead_id: leadId,
+      template_id: null,
+      name: `${business.business_name} — Demo Website`,
+      slug,
+      status: "GENERATED",
+      generated_content: validated.data,
+    },
+    supabase
+  );
 
-  await updateLead(leadId, { status: "DEMO_CREATED" });
+  await updateLead(leadId, { status: "DEMO_CREATED" }, supabase);
 
   if (!usedMock) {
-    await logApiUsage(usage);
+    await logApiUsage(usage, supabase);
   }
   void model;
   void promptVersion;
@@ -201,8 +214,10 @@ async function runGenerationOnce(
   };
 }
 
-async function logApiUsage(usage: { inputTokens: number; outputTokens: number } | null) {
-  const supabase = await createClient();
+async function logApiUsage(
+  usage: { inputTokens: number; outputTokens: number } | null,
+  supabase: AppSupabaseClient
+) {
   await supabase.from("api_usage").insert({
     provider: "anthropic",
     operation: "demo_content_generation",
@@ -213,8 +228,7 @@ async function logApiUsage(usage: { inputTokens: number; outputTokens: number } 
   });
 }
 
-async function logDemoError(leadId: string, err: unknown) {
-  const supabase = await createClient();
+async function logDemoError(leadId: string, err: unknown, supabase: AppSupabaseClient) {
   const message =
     err instanceof AnalysisError
       ? err.message

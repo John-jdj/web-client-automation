@@ -7,12 +7,21 @@
  * without a real database.
  */
 
+import { randomUUID } from "node:crypto";
+
 type Row = Record<string, unknown>;
 
-let idCounter = 0;
+/**
+ * Real UUIDs, not `${prefix}_${n}` — every Insert schema in lib/validation
+ * that carries a foreign key (LeadInputSchema.business_id, DemoInputSchema
+ * .lead_id, LeadScoreSchema.lead_id, ...) validates it with z.uuid(). An
+ * id generated here that isn't a real UUID would make that validation
+ * legitimately reject rows created by production code under test — the
+ * fake db must speak the same id format Supabase actually uses.
+ */
 function nextId(prefix: string): string {
-  idCounter += 1;
-  return `${prefix}_${idCounter}`;
+  void prefix;
+  return randomUUID();
 }
 
 export function createFakeSupabase() {
@@ -21,6 +30,7 @@ export function createFakeSupabase() {
     table: string;
     predicate: (row: Row) => boolean;
     message: string;
+    code?: string;
   }> = [];
 
   function table(name: string): Row[] {
@@ -35,6 +45,10 @@ export function createFakeSupabase() {
     const filters: Array<[string, unknown]> = [];
     const inFilters: Array<[string, unknown[]]> = [];
     const gteFilters: Array<[string, unknown]> = [];
+    const lteFilters: Array<[string, unknown]> = [];
+    const ltFilters: Array<[string, unknown]> = [];
+    const neqFilters: Array<[string, unknown]> = [];
+    const notInFilters: Array<[string, unknown[]]> = [];
     let limitN: number | null = null;
     let single = false;
     let maybeSingle = false;
@@ -60,6 +74,26 @@ export function createFakeSupabase() {
       },
       gte(col: string, val: unknown) {
         gteFilters.push([col, val]);
+        return builder;
+      },
+      lte(col: string, val: unknown) {
+        lteFilters.push([col, val]);
+        return builder;
+      },
+      lt(col: string, val: unknown) {
+        ltFilters.push([col, val]);
+        return builder;
+      },
+      neq(col: string, val: unknown) {
+        neqFilters.push([col, val]);
+        return builder;
+      },
+      /** Only supports the `.not(col, "in", "(a,b,c)")` shape this codebase actually uses. */
+      not(col: string, operator: string, value: unknown) {
+        if (operator === "in" && typeof value === "string") {
+          const values = value.replace(/^\(|\)$/g, "").split(",").filter(Boolean);
+          notInFilters.push([col, values]);
+        }
         return builder;
       },
       order() {
@@ -88,7 +122,7 @@ export function createFakeSupabase() {
         return builder;
       },
       then(
-        resolve: (v: { data: unknown; error: { message: string } | null; count?: number }) => void,
+        resolve: (v: { data: unknown; error: { message: string; code?: string } | null; count?: number }) => void,
         reject?: (err: unknown) => void
       ) {
         try {
@@ -101,7 +135,7 @@ export function createFakeSupabase() {
     };
 
     function runQuery(
-      resolve: (v: { data: unknown; error: { message: string } | null; count?: number }) => void
+      resolve: (v: { data: unknown; error: { message: string; code?: string } | null; count?: number }) => void
     ) {
       const matches = (row: Row) =>
         filters.every(([col, val]) => getPath(row, col) === val) &&
@@ -110,7 +144,19 @@ export function createFakeSupabase() {
           const rowVal = getPath(row, col);
           if (typeof rowVal === "string" && typeof val === "string") return rowVal >= val;
           return false;
-        });
+        }) &&
+        lteFilters.every(([col, val]) => {
+          const rowVal = getPath(row, col);
+          if (typeof rowVal === "string" && typeof val === "string") return rowVal <= val;
+          return false;
+        }) &&
+        ltFilters.every(([col, val]) => {
+          const rowVal = getPath(row, col);
+          if (typeof rowVal === "string" && typeof val === "string") return rowVal < val;
+          return false;
+        }) &&
+        neqFilters.every(([col, val]) => getPath(row, col) !== val) &&
+        notInFilters.every(([col, values]) => !values.includes(getPath(row, col)));
 
       if (mode === "insert") {
         const now = new Date().toISOString();
@@ -118,8 +164,29 @@ export function createFakeSupabase() {
 
         const failure = insertFailures.find((f) => f.table === tableName && f.predicate(obj));
         if (failure) {
-          resolve({ data: null, error: { message: failure.message } });
+          resolve({ data: null, error: { message: failure.message, code: failure.code } });
           return;
+        }
+
+        // Mirrors supabase/migrations/0002_automation_runs_single_active_run.sql's
+        // partial unique index (`unique (status) where status = 'RUNNING'`):
+        // at most one RUNNING row may exist in automation_runs at a time.
+        // A second concurrent insert fails exactly like real Postgres would
+        // (23505 unique_violation), so tests can exercise the same
+        // check-then-insert race real concurrent requests would hit.
+        if (tableName === "automation_runs" && obj.status === "RUNNING") {
+          const alreadyRunning = rows.some((r) => r.status === "RUNNING");
+          if (alreadyRunning) {
+            resolve({
+              data: null,
+              error: {
+                message:
+                  'duplicate key value violates unique constraint "automation_runs_single_active_run_idx"',
+                code: "23505",
+              },
+            });
+            return;
+          }
         }
 
         const row: Row = {
@@ -135,13 +202,43 @@ export function createFakeSupabase() {
       }
 
       if (mode === "update") {
-        const idx = rows.findIndex(matches);
-        if (idx === -1) {
-          resolve({ data: null, error: { message: `No row found in ${tableName}` } });
+        const matchedIndexes: number[] = [];
+        rows.forEach((row, i) => {
+          if (matches(row)) matchedIndexes.push(i);
+        });
+
+        if (matchedIndexes.length === 0) {
+          // Real Postgrest: an update matching zero rows is not itself an
+          // error — it's a successful update of nothing (data: [], or
+          // null for `.maybeSingle()`). Only `.single()` errors on zero
+          // rows, since that's what `.single()` means. This is what makes
+          // a conditional claim like
+          // `.update(...).eq("status", "PENDING").maybeSingle()`
+          // (lib/db/jobs.ts's claimJob) a safe, atomic "claim if still
+          // available" instead of a thrown error when another caller
+          // already claimed the row first — and what lets a bulk sweep
+          // like reapStaleRuns's `.update(...).eq(...).lt(...)` (no
+          // `.single()`/`.maybeSingle()` at all) safely match nothing.
+          if (single) {
+            resolve({ data: null, error: { message: `No row found in ${tableName}` } });
+          } else {
+            resolve({ data: maybeSingle ? null : [], error: null });
+          }
           return;
         }
-        rows[idx] = { ...rows[idx], ...(payload as Row), updated_at: new Date().toISOString() };
-        resolve({ data: rows[idx], error: null });
+
+        // Real Postgrest updates every row matching the filter, not just
+        // the first — `.single()`/`.maybeSingle()` additionally assert
+        // that call sites using them only ever target one row.
+        for (const i of matchedIndexes) {
+          rows[i] = { ...rows[i], ...(payload as Row), updated_at: new Date().toISOString() };
+        }
+
+        if (single || maybeSingle) {
+          resolve({ data: rows[matchedIndexes[0]], error: null });
+        } else {
+          resolve({ data: matchedIndexes.map((i) => rows[i]), error: null });
+        }
         return;
       }
 
