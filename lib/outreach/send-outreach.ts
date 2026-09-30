@@ -6,7 +6,8 @@ import { isSuppressed } from "@/lib/db/suppression";
 import { getAutomationSettings, countTodaysOutreachSends } from "@/lib/db/automation-settings";
 import { getOutreachMessage, updateOutreachMessage, type OutreachMessage } from "@/lib/db/outreach";
 import { sendEmail } from "@/lib/email/send-email";
-import { renderOutreachEmailHtml } from "@/lib/outreach/render-email";
+import { renderOutreachEmailHtml, renderOutreachEmailText } from "@/lib/outreach/render-email";
+import { buildUnsubscribeUrl } from "@/lib/outreach/unsubscribe-token";
 import { EmailProviderError } from "@/lib/email/errors";
 import { EMAIL_PROVIDER } from "@/lib/email/config";
 
@@ -123,8 +124,22 @@ export async function sendOutreach(messageId: string): Promise<SendOutreachResul
 
   await updateOutreachMessage(message.id, { status: "SENDING" });
 
-  const html = renderOutreachEmailHtml(message.message_body ?? "");
-  const text = message.message_body ?? "";
+  // Built before the retry loop, and its own failure (only possible in
+  // real mode with OUTREACH_UNSUBSCRIBE_SECRET/APP_URL missing) is never
+  // retried — it's a configuration problem, not a transient provider
+  // error, so it goes straight to FAILED without ever calling sendEmail.
+  let unsubscribeUrl: string;
+  try {
+    unsubscribeUrl = buildUnsubscribeUrl(message.id);
+  } catch (err) {
+    await persistSendFailure(message, err, 1);
+    throw err instanceof EmailProviderError
+      ? err
+      : new EmailProviderError("UNKNOWN", "Could not build a safe unsubscribe link.", false);
+  }
+
+  const html = renderOutreachEmailHtml(message.message_body ?? "", unsubscribeUrl);
+  const text = renderOutreachEmailText(message.message_body ?? "", unsubscribeUrl);
   const subject = message.subject ?? "";
 
   let lastError: unknown;
@@ -155,6 +170,8 @@ export async function sendOutreach(messageId: string): Promise<SendOutreachResul
     }
   }
 
+  await persistSendFailure(message, lastError, MAX_ATTEMPTS);
+
   const errorMessage =
     lastError instanceof EmailProviderError
       ? lastError.message
@@ -162,17 +179,31 @@ export async function sendOutreach(messageId: string): Promise<SendOutreachResul
         ? lastError.message
         : "Outreach send failed.";
 
-  await updateOutreachMessage(message.id, {
-    status: "FAILED",
-    error_message: errorMessage,
-    attempt_count: message.attempt_count + MAX_ATTEMPTS,
-  });
-  await logOutreachEvent(message.id, "FAILED", null);
-  await logSendError(message.lead_id, errorMessage);
-
   throw lastError instanceof EmailProviderError
     ? lastError
     : new EmailProviderError("UNKNOWN", errorMessage, false);
+}
+
+/** Records a FAILED outreach_messages row + event + error log — shared by the retry loop and the pre-send unsubscribe-link failure path. */
+async function persistSendFailure(
+  message: OutreachMessage,
+  err: unknown,
+  attemptsMade = 1
+): Promise<void> {
+  const errorMessage =
+    err instanceof EmailProviderError
+      ? err.message
+      : err instanceof Error
+        ? err.message
+        : "Outreach send failed.";
+
+  await updateOutreachMessage(message.id, {
+    status: "FAILED",
+    error_message: errorMessage,
+    attempt_count: message.attempt_count + attemptsMade,
+  });
+  await logOutreachEvent(message.id, "FAILED", null);
+  await logSendError(message.lead_id, errorMessage);
 }
 
 /** True if some OTHER message for the same lead is already SENT or SENDING. */

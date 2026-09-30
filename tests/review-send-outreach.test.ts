@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createFakeSupabase, type FakeSupabase } from "./helpers/fake-supabase";
 
 vi.mock("@/lib/supabase/server", () => ({
@@ -244,5 +244,56 @@ describe("sendOutreach (provider failure)", () => {
     const messages = fake._dump()["outreach_messages"] as Array<{ id: string; error_message: string | null }>;
     const stored = messages.find((m) => m.id === uuid("m14"));
     expect(stored?.error_message).not.toMatch(/RESEND_API_KEY|Bearer /i);
+  });
+});
+
+describe("sendOutreach (unsubscribe-link safety gate, Step 10.1)", () => {
+  const ORIGINAL_ENV = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it("fails safely — no email sent — when DEMO_MODE=false and no unsubscribe secret is configured", async () => {
+    seedSettings({ auto_outreach_enabled: true });
+    seedMessage({ messageId: uuid("m15"), leadId: uuid("l15"), businessId: uuid("b15"), status: "QUEUED" });
+    process.env.DEMO_MODE = "false";
+    delete process.env.OUTREACH_UNSUBSCRIBE_SECRET;
+    process.env.APP_URL = "https://example.com";
+
+    await expect(sendOutreach(uuid("m15"))).rejects.toThrow(EmailProviderError);
+    expect(sendEmail).not.toHaveBeenCalled();
+
+    const messages = fake._dump()["outreach_messages"] as Array<{ id: string; status: string; error_message: string | null }>;
+    const stored = messages.find((m) => m.id === uuid("m15"));
+    expect(stored?.status).toBe("FAILED");
+    expect(stored?.error_message).not.toMatch(/OUTREACH_UNSUBSCRIBE_SECRET=|Bearer /i);
+  });
+
+  it("fails safely — no email sent — when DEMO_MODE=false and APP_URL is not configured", async () => {
+    seedSettings({ auto_outreach_enabled: true });
+    seedMessage({ messageId: uuid("m16"), leadId: uuid("l16"), businessId: uuid("b16"), status: "QUEUED" });
+    process.env.DEMO_MODE = "false";
+    process.env.OUTREACH_UNSUBSCRIBE_SECRET = "a-real-secret";
+    delete process.env.APP_URL;
+
+    await expect(sendOutreach(uuid("m16"))).rejects.toThrow(EmailProviderError);
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it("still sends successfully in DEMO_MODE with no unsubscribe env configured at all", async () => {
+    seedSettings({ auto_outreach_enabled: true });
+    seedMessage({ messageId: uuid("m17"), leadId: uuid("l17"), businessId: uuid("b17"), status: "QUEUED" });
+    process.env.DEMO_MODE = "true";
+    delete process.env.OUTREACH_UNSUBSCRIBE_SECRET;
+    delete process.env.APP_URL;
+    vi.mocked(sendEmail).mockResolvedValue(MOCK_SEND_RESULT);
+
+    const result = await sendOutreach(uuid("m17"));
+    expect(result.status).toBe("SENT");
+
+    const call = vi.mocked(sendEmail).mock.calls.at(-1)?.[0];
+    expect(call?.html).toContain("/api/outreach/unsubscribe?token=");
+    expect(call?.text).toContain("/api/outreach/unsubscribe?token=");
   });
 });

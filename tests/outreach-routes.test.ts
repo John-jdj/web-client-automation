@@ -45,7 +45,6 @@ const { POST: approveRoute } = await import("@/app/api/outreach/[id]/approve/rou
 const { POST: rejectRoute } = await import("@/app/api/outreach/[id]/reject/route");
 const { POST: sendRoute } = await import("@/app/api/outreach/[id]/send/route");
 const { POST: prepareBatchRoute } = await import("@/app/api/outreach/prepare-batch/route");
-const { POST: unsubscribeRoute } = await import("@/app/api/outreach/unsubscribe/route");
 
 let fake: FakeSupabase;
 
@@ -221,20 +220,6 @@ describe("POST /api/outreach/prepare-batch (never sends, respects limit)", () =>
   });
 });
 
-describe("POST /api/outreach/unsubscribe (public, safe)", () => {
-  it("suppresses the given email and is idempotent", async () => {
-    const first = await unsubscribeRoute(req("http://localhost/api/outreach/unsubscribe", { email: "opt-out@example.com" }));
-    expect(first.status).toBe(200);
-
-    const second = await unsubscribeRoute(req("http://localhost/api/outreach/unsubscribe", { email: "opt-out@example.com" }));
-    expect(second.status).toBe(200);
-
-    const suppressed = fake._dump()["suppression_list"] as Array<{ email: string }>;
-    expect(suppressed.filter((s) => s.email === "opt-out@example.com")).toHaveLength(1);
-  });
-
-  it("rejects an invalid email", async () => {
-    const response = await unsubscribeRoute(req("http://localhost/api/outreach/unsubscribe", { email: "not-an-email" }));
-    expect(response.status).toBe(400);
-  });
-});
+// POST /api/outreach/unsubscribe now takes a signed token, not a raw
+// email — see tests/outreach-unsubscribe.test.ts for its full coverage
+// (it needs its own createServiceClient mock and DEMO_MODE control).

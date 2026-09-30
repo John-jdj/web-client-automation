@@ -1,5 +1,6 @@
 import "server-only";
 import { createClient } from "@/lib/supabase/server";
+import { createServiceClient } from "@/lib/supabase/service";
 import {
   OutreachMessageSchema,
   type OutreachMessageInput,
@@ -50,6 +51,26 @@ export async function updateOutreachMessage(
     .eq("id", id)
     .select("*")
     .single();
+
+  if (error) throw error;
+  return data;
+}
+
+/**
+ * Service-role read of a single message by id — for the same one
+ * legitimately unauthenticated caller as addSuppressionAsService (see
+ * lib/db/suppression.ts): the signed-token unsubscribe route. `id` here
+ * always comes from an HMAC-verified token, never directly from the
+ * request, so this never lets an anonymous caller browse arbitrary
+ * messages by guessing ids.
+ */
+export async function getOutreachMessageAsService(id: string): Promise<OutreachMessage | null> {
+  const supabase = createServiceClient();
+  const { data, error } = await supabase
+    .from("outreach_messages")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
 
   if (error) throw error;
   return data;

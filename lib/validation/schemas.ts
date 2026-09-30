@@ -350,12 +350,13 @@ export const PrepareOutreachBatchRequestSchema = z.object({
 export type PrepareOutreachBatchRequest = z.infer<typeof PrepareOutreachBatchRequestSchema>;
 
 /**
- * Request body for POST /api/outreach/unsubscribe. Deliberately minimal —
- * this is the one endpoint in the app meant to be called unauthenticated,
- * by the recipient themselves, so it accepts nothing beyond the address
- * being suppressed.
+ * Request body/query for POST|GET /api/outreach/unsubscribe (Step 10.1).
+ * Deliberately just a signed token — never a caller-supplied email — so
+ * an unauthenticated caller can only ever suppress the one recipient the
+ * token was actually signed for (see lib/outreach/unsubscribe-token.ts),
+ * never an address of their choosing.
  */
 export const UnsubscribeRequestSchema = z.object({
-  email: z.string().email(),
+  token: z.string().min(1),
 });
 export type UnsubscribeRequest = z.infer<typeof UnsubscribeRequestSchema>;

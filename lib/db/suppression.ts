@@ -1,5 +1,6 @@
 import "server-only";
 import { createClient } from "@/lib/supabase/server";
+import { createServiceClient } from "@/lib/supabase/service";
 
 /**
  * Checks whether a business's phone or email appears in `suppression_list`.
@@ -62,6 +63,46 @@ export async function addSuppression(input: {
   if (alreadySuppressed) return;
 
   const supabase = await createClient();
+  const { error } = await supabase.from("suppression_list").insert({
+    email: input.email ?? null,
+    phone: input.phone ?? null,
+    reason: input.reason ?? null,
+    source: input.source ?? null,
+  });
+
+  if (error) throw error;
+}
+
+/**
+ * Service-role variant of addSuppression — for the one legitimately
+ * unauthenticated caller in this app: the signed-token unsubscribe route
+ * (app/api/outreach/unsubscribe/route.ts). `suppression_list` is
+ * admin-only under RLS, but a recipient clicking an unsubscribe link has
+ * no Supabase session by design; the HMAC-verified token
+ * (lib/outreach/unsubscribe-token.ts) is what authorizes this write, not
+ * a session. Only ever call this after verifying that token — never from
+ * a route that takes an email/id directly from the request.
+ */
+export async function addSuppressionAsService(input: {
+  email?: string | null;
+  phone?: string | null;
+  reason?: string | null;
+  source?: string | null;
+}): Promise<void> {
+  if (!input.email && !input.phone) return;
+
+  const supabase = createServiceClient();
+
+  if (input.email) {
+    const { data, error } = await supabase
+      .from("suppression_list")
+      .select("id")
+      .eq("email", input.email)
+      .limit(1);
+    if (error) throw error;
+    if (data && data.length > 0) return;
+  }
+
   const { error } = await supabase.from("suppression_list").insert({
     email: input.email ?? null,
     phone: input.phone ?? null,
