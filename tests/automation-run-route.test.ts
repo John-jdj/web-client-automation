@@ -20,9 +20,9 @@ const { POST, GET, PUT, PATCH, DELETE } = await import("@/app/api/automation/run
 const ORIGINAL_ENV = { ...process.env };
 const REAL_SECRET = "a-real-cron-secret-value-for-tests";
 
-function req(headers?: Record<string, string>) {
+function req(headers?: Record<string, string>, method: string = "POST") {
   return new Request("http://localhost/api/automation/run", {
-    method: "POST",
+    method,
     headers,
   });
 }
@@ -188,18 +188,59 @@ describe("POST /api/automation/run (error mapping)", () => {
   });
 });
 
-describe("Method restrictions", () => {
-  it("GET returns 405 and does not run automation", async () => {
-    const response = await GET();
-    expect(response.status).toBe(405);
-    expect(response.headers.get("Allow")).toContain("POST");
+describe("GET /api/automation/run (Vercel Cron's invocation method — Step 11.5)", () => {
+  // Vercel Cron Jobs always invoke the scheduled path with GET — there is
+  // no way to configure Vercel's scheduler to send POST. GET must
+  // therefore be authenticated and behave identically to POST, not be a
+  // separate, lesser-checked path.
+  it("executes runAutomation for a correctly authenticated GET request, just like POST", async () => {
+    vi.mocked(runAutomation).mockResolvedValue({
+      runId: "run-1",
+      status: "COMPLETED",
+      steps: [{ step: "lead_analysis", status: "COMPLETED", summary: { qualifiedLeads: 2 } }],
+    });
+
+    const response = await GET(req({ Authorization: `Bearer ${REAL_SECRET}` }, "GET"));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(body.runId).toBe("run-1");
+    expect(runAutomation).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a GET request with no Authorization header (401, not a free pass)", async () => {
+    const response = await GET(req(undefined, "GET"));
+    expect(response.status).toBe(401);
     expect(runAutomation).not.toHaveBeenCalled();
   });
 
-  it("PUT, PATCH, and DELETE also return 405", async () => {
+  it("rejects a GET request with the wrong secret", async () => {
+    const response = await GET(req({ Authorization: "Bearer wrong-value-entirely" }, "GET"));
+    expect(response.status).toBe(401);
+    expect(runAutomation).not.toHaveBeenCalled();
+  });
+
+  it("fails closed (500) on GET too when AUTOMATION_CRON_SECRET is unconfigured", async () => {
+    delete process.env.AUTOMATION_CRON_SECRET;
+    const response = await GET(req({ Authorization: `Bearer ${REAL_SECRET}` }, "GET"));
+    expect(response.status).toBe(500);
+    expect(runAutomation).not.toHaveBeenCalled();
+  });
+
+  it("maps AutomationAlreadyRunningError to 409 on GET too", async () => {
+    vi.mocked(runAutomation).mockRejectedValue(new AutomationAlreadyRunningError("run-existing"));
+    const response = await GET(req({ Authorization: `Bearer ${REAL_SECRET}` }, "GET"));
+    expect(response.status).toBe(409);
+  });
+});
+
+describe("Method restrictions", () => {
+  it("PUT, PATCH, and DELETE return 405 and list GET, POST as the allowed methods", async () => {
     for (const handler of [PUT, PATCH, DELETE]) {
       const response = await handler();
       expect(response.status).toBe(405);
+      expect(response.headers.get("Allow")).toBe("GET, POST");
     }
     expect(runAutomation).not.toHaveBeenCalled();
   });

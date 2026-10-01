@@ -3,16 +3,26 @@ import { timingSafeEqual } from "node:crypto";
 import { runAutomation, AutomationAlreadyRunningError } from "@/lib/automation/run-automation";
 
 /**
- * Step 11.3 — the endpoint a future trusted cloud scheduler (Vercel Cron
- * or similar — not wired up yet, see the final report) will call. It is
- * a thin, authenticated trigger: it does nothing but verify the caller
- * and call `runAutomation()` (lib/automation/run-automation.ts), which is
- * where every actual safety control lives (automation_settings.enabled,
+ * Step 11.3 — the endpoint a trusted cloud scheduler calls. It is a thin,
+ * authenticated trigger: it does nothing but verify the caller and call
+ * `runAutomation()` (lib/automation/run-automation.ts), which is where
+ * every actual safety control lives (automation_settings.enabled,
  * per-step flags, DEMO_MODE, daily limits, suppression, approval,
  * idempotency, job claiming, retries, error/audit logging). This route
  * adds no business logic of its own, and — like runAutomation() itself —
  * never imports or calls sendOutreach, so it cannot send email no matter
  * what automation_settings says.
+ *
+ * Step 11.5 — both GET and POST are accepted with identical behavior.
+ * This isn't a REST relaxation for its own sake: Vercel Cron Jobs
+ * (configured in vercel.json, see that file's comment) always invoke the
+ * scheduled path with a GET request — there is no way to configure
+ * Vercel's scheduler to send POST. GET is authenticated exactly like
+ * POST (the same constant-time Authorization: Bearer check, the same
+ * fail-closed-on-missing-config behavior) — it is not a lesser-privileged
+ * or unauthenticated path, it is the same trigger reachable by a second
+ * HTTP method so the one real caller (Vercel's scheduler) can actually
+ * reach it. PUT/PATCH/DELETE remain disallowed.
  */
 
 const NO_STORE_HEADERS = { "Cache-Control": "no-store" } as const;
@@ -25,7 +35,7 @@ function methodNotAllowed() {
   return json(
     { success: false, error: "Method not allowed." },
     405,
-    { Allow: "POST" }
+    { Allow: "GET, POST" }
   );
 }
 
@@ -68,7 +78,7 @@ function isAuthorized(request: Request, configuredSecret: string): boolean {
   return timingSafeEqual(suppliedBuf, configuredBuf);
 }
 
-export async function POST(request: Request) {
+async function handleTriggerRequest(request: Request) {
   const configuredSecret = getConfiguredSecret();
   if (!configuredSecret) {
     // Fail closed: never run automation just because the secret wasn't
@@ -98,8 +108,13 @@ export async function POST(request: Request) {
   }
 }
 
-export async function GET() {
-  return methodNotAllowed();
+export async function POST(request: Request) {
+  return handleTriggerRequest(request);
+}
+
+/** Vercel Cron's own invocation method — see the file-level comment. Same auth, same behavior as POST. */
+export async function GET(request: Request) {
+  return handleTriggerRequest(request);
 }
 
 export async function PUT() {
